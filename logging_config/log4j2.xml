@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+  <Appenders>
+    <Http name="bun" url="http://api_bun:3000/logs">
+      <JsonTemplateLayout eventTemplateUri="file:///metabase.db/layout.json"/>
+    </Http>
+    <!-- <Http name="python" url="http://api_python:3000/logs">
+      <JsonTemplateLayout eventTemplateUri="file:///metabase.db/layout.json"/>
+    </Http> -->
+    <Console name="STDOUT" target="SYSTEM_OUT" follow="true">
+      <PatternLayout pattern="%date %level %logger{2} :: %message%n%throwable">
+        <replace regex=":basic-auth \\[.*\\]" replacement=":basic-auth [redacted]"/>
+      </PatternLayout>
+    </Console>
+  </Appenders>
+  <Loggers>
+    <Logger name="metabase" level="INFO"/>
+    <Logger name="metabase-enterprise" level="INFO"/>
+    <Logger name="metabase.plugins" level="INFO"/>
+    <Logger name="metabase.server.middleware" level="DEBUG"/>
+    <Logger name="metabase.query-processor.async" level="INFO"/>
+    <Logger name="metabase.driver.sql-jdbc.sync" level="ALL"/>
+    <Logger name="metabase.sync" level="ALL"/>
+    <Logger name="com.mchange" level="ERROR"/>
+    <Logger name="org.quartz" level="INFO"/>
+    <Logger name="liquibase" level="ERROR"/>
+    
+    <Root level="WARN">
+      <AppenderRef ref="bun"/>
+      <!-- <AppenderRef ref="python"/> -->
+      <AppenderRef ref="STDOUT"/>
+    </Root>
+  </Loggers>
+</Configuration>

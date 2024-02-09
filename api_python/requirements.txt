@@ -1,0 +1,4 @@
+uvicorn[standard]==0.23.2
+gunicorn==21.0.1
+fastapi==0.101.1
+databases[postgresql]==0.7.0

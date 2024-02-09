@@ -1,0 +1,295 @@
+services:
+  pyroscope:
+    image: grafana/pyroscope:1.4.0
+    hostname: pyroscope
+    networks:
+      - metanet1
+    volumes:
+      - $PWD/pyroscope/config.yaml:/etc/pyroscope/config.yaml
+    depends_on:
+      grafana:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2048M
+        reservations:
+          cpus: '2'
+          memory: 2048M
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:4040/ready || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+  metabase:
+    build:
+      dockerfile: Dockerfile
+      context: runner/.
+      args:
+        version: v1.48.5
+    container_name: metabase
+    hostname: metabase
+    volumes: 
+      - /dev/urandom:/dev/random:ro
+      - $PWD/logging_config:/metabase.db
+      - $PWD/pyroscope/pyroscope.jar:/app/pyroscope/pyroscope.jar
+      - $PWD/otel/opentelemetry-javaagent.jar:/app/otel/opentelemetry-javaagent.jar
+      - $PWD/jmx-exporter:/app/jmx
+    ports:
+      - 3000:3000
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_CONNECTION_URI: "postgres://postgres-app-db:5432/metabase?user=metabase&password=mysecretpassword&sslmode=prefer"
+      MB_SITE_URL: http://localhost:3000/
+      MB_EMAIL_SMTP_HOST: maildev-sub
+      MB_EMAIL_SMTP_PASSWORD: password
+      MB_EMAIL_SMTP_PORT: 1025
+      MB_EMAIL_SMTP_SECURITY: none
+      MB_EMAIL_SMTP_USERNAME: admin
+      MB_PROMETHEUS_SERVER_PORT: 3300
+      JAVA_TOOL_OPTIONS: -Xms512m -Xmx1530m -javaagent:/app/pyroscope/pyroscope.jar -javaagent:/app/otel/opentelemetry-javaagent.jar -javaagent:/app/jmx/jmx_prometheus_javaagent-0.20.0.jar=3301:/app/jmx/config.yml -Dlog4j.configurationFile=file:/metabase.db/log4j2.xml
+      PYROSCOPE_SERVER_ADDRESS: http://pyroscope:4040
+      PYROSCOPE_APPLICATION_NAME: metabase
+      PYROSCOPE_PROFILER_ALLOC: 524288
+      PYROSCOPE_PROFILER_LOCK: 10000
+      PYROSCOPE_FORMAT: jfr
+      OTEL_EXPORTER_OTLP_COMPRESSION: gzip
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_SERVICE_NAME: metabase
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
+      OTEL_METRICS_EXPORTER: none
+      OTEL_EXPORTER_PROMETHEUS_PORT: 9090
+      OTEL_EXPORTER_PROMETHEUS_HOST: prometheus
+      # OTEL_LOGS_EXPORTER: none
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      # OTEL_INSTRUMENTATION_MICROMETER_ENABLED: true
+      # OTEL_INSTRUMENTATION_COMMON_EXPERIMENTAL_CONTROLLER_TELEMETRY_ENABLED: true
+      # OTEL_INSTRUMENTATION_COMMON_EXPERIMENTAL_VIEW_TELEMETRY_ENABLED: true
+      MB_COLORIZE_LOGS: false
+      MB_EMOJI_IN_LOGS: false
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1500M
+        reservations:
+          cpus: '2'
+          memory: 200M
+    networks: 
+      - metanet1
+    depends_on: 
+      postgres-app-db:
+        condition: service_healthy
+      postgres-data1:
+        condition: service_healthy
+      pyroscope:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail -X GET -I http://localhost:3000/api/health || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 5
+  postgres-app-db:
+    image: postgres:16.1-alpine
+    container_name: postgres-app-db
+    hostname: postgres-app-db
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: metabase
+      POSTGRES_DB: metabase
+      POSTGRES_PASSWORD: mysecretpassword
+    volumes:
+      - $PWD/postgres_origin:/var/lib/postgresql/data
+    networks: 
+      - metanet1
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 1024M
+        reservations:
+          cpus: '4'
+          memory: 512M
+    command: -c log_statement=all -c 'max_connections=10000'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase -d metabase"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+  setup:
+    build: setup/.
+    container_name: setup
+    volumes:
+      - $PWD/setup/setup.py:/app/setup.py
+    networks:
+      - metanet1
+    depends_on:
+      metabase:
+        condition: service_healthy
+    command: python /app/setup.py
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 64M
+        reservations:
+          cpus: '0.5'
+          memory: 32M
+    environment:
+      host: http://metabase
+      port: 3000
+      dbs: 1
+  tempo:
+    image: grafana/tempo:2.3.1
+    hostname: tempo
+    container_name: tempo
+    networks:
+      - metanet1
+    volumes:
+      - $PWD/tempo/config.yaml:/etc/config.yaml
+    command: [ "-config.file=/etc/config.yaml" ]
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '2'
+          memory: 256M
+    depends_on:
+      grafana:
+        condition: service_healthy
+  postgres-data1:
+    image:  metabase/qa-databases:postgres-sample-15
+    container_name: postgres-data1
+    hostname: postgres-data1
+    networks: 
+      - metanet1
+    ports:
+      - 5433:5432
+    cpus: 4
+    mem_limit: 8192mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase -d sample"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    command: -c log_statement=all -c max_connections=10000
+  maildev-sub:
+    image: maildev/maildev:2.1.0
+    container_name: maildev-sub
+    hostname: maildev-sub
+    ports:
+    - 3003:1080
+    networks:
+    - metanet1
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 64M
+        reservations:
+          cpus: '0.5'
+          memory: 32M
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: prometheus
+    hostname: prometheus
+    ports:
+    - 9090:9090
+    networks:
+    - metanet1
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+        reservations:
+          cpus: '1'
+          memory: 256M
+    volumes:
+      - $PWD/prometheus/prometheus.yml:/prometheus/prometheus.yml
+    command: --web.enable-remote-write-receiver
+  grafana:
+    image: grafana/grafana-oss:10.3.1
+    container_name: grafana
+    hostname: grafana
+    ports:
+      - 3030:3000
+    networks: 
+      - metanet1
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '1'
+          memory: 256M
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: true
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: true
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor traceQLStreaming metricsSummary
+    volumes:
+      - $PWD/grafana/datasources/:/etc/grafana/provisioning/datasources/
+      - $PWD/grafana/dashboards/:/etc/grafana/provisioning/dashboards/
+      - $PWD/grafana/defaults.ini:/etc/grafana/grafana.ini
+    healthcheck:
+      test: curl --fail -X GET -I http://localhost:3000/api/health || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 3
+  api_bun:
+    build: api_bun/.
+    container_name: api_bun
+    hostname: api_bun
+    restart: always
+    networks: 
+      - metanet1
+    environment:
+      BUN_PORT: 3000
+      LOKI_HOST: http://loki:3100/loki/api/v1/push
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 64M
+        reservations:
+          cpus: '0.5'
+          memory: 32M
+  loki:
+    image: grafana/loki:2.9.4
+    hostname: loki
+    container_name: loki
+    networks:
+      - metanet1
+    ports:
+      - 3100:3100
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - $PWD/loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 128M
+        reservations:
+          cpus: '2'
+          memory: 64M
+
+networks: 
+  metanet1:
+    driver: bridge
